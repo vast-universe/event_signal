@@ -43,5 +43,8 @@ class ConnectionManager:
     async def send_settlement(self, settlement_data: dict):
         await self.broadcast({"type": "settlement", "data": settlement_data})
 
+    async def send_ticker(self, ticker_data: dict):
+        await self.broadcast({"type": "ticker", "data": ticker_data})
+
 
 ws_manager = ConnectionManager()

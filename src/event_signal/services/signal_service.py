@@ -51,6 +51,18 @@ class SymbolHandler:
         prob_down = self.model.predict_down(feat)
         prob_up = self.model.predict_up(feat)
 
+        # 推送 ticker 数据（每分钟K线收盘时）
+        await ws_manager.send_ticker({
+            'symbol': self.symbol,
+            'price': price,
+            'rsi6': feat.get('rsi6', 50),
+            'rsi14': feat.get('rsi14', 50),
+            'bb_pct': feat.get('bb_pct', 0.5),
+            'prob_down': prob_down,
+            'prob_up': prob_up,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        })
+
         signal = self.strategy.check(price, feat, prob_down, prob_up)
 
         if signal:
