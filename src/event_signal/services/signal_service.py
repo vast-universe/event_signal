@@ -32,7 +32,7 @@ class SymbolHandler:
 
     async def on_kline_close(self, kline: Kline, price: float, db) -> Optional[Signal]:
         """处理K线收盘"""
-        current_ts = int(datetime.now().timestamp() * 1000)
+        current_ts = int(datetime.utcnow().timestamp() * 1000)
 
         self.features.add_kline(kline)
         self.model.update_with_price(current_ts, price)
@@ -163,6 +163,8 @@ class SignalService:
         self.ws = None
         self.db = None
         self._lines = {}
+        self._current_prices: Dict[str, float] = {}  # 实时价格缓存
+        self._settlement_task = None
 
         for symbol in self.symbols:
             model = None
@@ -187,6 +189,43 @@ class SignalService:
             path = f"models/{symbol}.pkl"
             handler.model.save(path)
         print(f"\n💾 模型已保存 ({datetime.now().strftime('%H:%M:%S')})")
+
+    async def _recover_pending_signals(self):
+        """启动时恢复待结算信号"""
+        print("恢复待结算信号...")
+        async with self.db.session() as session:
+            repo = SignalRepository(session)
+            pending = await repo.get_pending()
+            
+            current_ts = int(datetime.utcnow().timestamp() * 1000)
+            
+            for sig in pending:
+                # 计算结算时间戳 (创建时间 + 10分钟)
+                # created_at 是 UTC naive datetime，需要手动转换
+                from calendar import timegm
+                created_utc_ts = timegm(sig.created_at.timetuple())
+                settle_ts = int((created_utc_ts + HORIZON * 60) * 1000)
+                
+                # 如果已经过期，立即标记为需要结算
+                if settle_ts < current_ts:
+                    print(f"  ⚠️ 信号 {sig.id} 已过期，等待结算")
+                
+                handler = self.handlers.get(sig.symbol)
+                if handler:
+                    handler.pending_signals.append({
+                        'id': sig.id,
+                        'settle_ts': settle_ts,
+                        'direction': sig.direction,
+                        'level': sig.level,
+                        'entry_price': sig.entry_price,
+                        'confidence': sig.confidence,
+                        'bet_amount': sig.bet_amount,
+                    })
+            
+            if pending:
+                print(f"  恢复 {len(pending)} 个待结算信号")
+            else:
+                print("  无待结算信号")
 
     async def _fetch_history(self):
         url = "https://api.binance.com/api/v3/klines"
@@ -227,6 +266,7 @@ class SignalService:
 
         handler = self.handlers[symbol]
         price = float(k.get('c', 0))
+        self._current_prices[symbol] = price  # 更新实时价格缓存
 
         if is_closed:
             kline = Kline(
@@ -306,6 +346,23 @@ class SignalService:
         print("=" * 70)
         print()
 
+    async def _settlement_loop(self):
+        """独立的结算循环，每秒检查一次"""
+        while True:
+            try:
+                # 使用 UTC 时间戳
+                current_ts = int(datetime.utcnow().timestamp() * 1000)
+                
+                for symbol, handler in self.handlers.items():
+                    price = self._current_prices.get(symbol)
+                    if price and handler.pending_signals:
+                        await handler._settle_signals(current_ts, price, self.db)
+                
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"\n⚠️ 结算循环错误: {e}")
+                await asyncio.sleep(1)
+
     async def connect_binance_ws(self):
         streams = "/".join([f"{s.lower()}@kline_1m" for s in self.symbols])
         url = f"wss://stream.binance.com:9443/stream?streams={streams}"
@@ -340,14 +397,20 @@ class SignalService:
         print("=" * 70)
 
         self.db = await get_db()
+        await self._recover_pending_signals()
         await self._fetch_history()
 
         print("\n开始监听K线...")
         print()
         print()
+        
+        # 启动独立的结算任务
+        self._settlement_task = asyncio.create_task(self._settlement_loop())
 
     async def stop(self):
         """停止服务"""
+        if self._settlement_task:
+            self._settlement_task.cancel()
         self._save_models()
         if self.ws:
             await self.ws.close()
