@@ -13,11 +13,11 @@
 // ==================== 配置 ====================
 var CONFIG = {
     // 信号服务地址（改成你的服务器地址）
-    WS_URL: "ws://192.168.1.100:8000/ws",
-    API_URL: "http://192.168.1.100:8000",
+    WS_URL: "ws://192.168.31.15:8000/ws",
+    API_URL: "http://192.168.31.15:8000",
     
     // 只接收这些等级的信号 (S/A/B/C)
-    ACCEPT_LEVELS: ["S", "A"],
+    ACCEPT_LEVELS: ["S", "A", "B", "C"],
     
     // 提醒设置
     VIBRATE: true,          // 震动提醒
@@ -44,15 +44,15 @@ ui.layout(
         
         <horizontal>
             <text text="服务器: " textColor="#333"/>
-            <input id="serverUrl" text="ws://192.168.1.100:8000/ws" layout_weight="1" textSize="12sp"/>
+            <input id="serverUrl" text="ws://192.168.31.15:8000/ws" layout_weight="1" textSize="12sp"/>
         </horizontal>
         
         <horizontal marginTop="8">
             <text text="接收等级: " textColor="#333"/>
             <checkbox id="levelS" text="S" checked="true"/>
             <checkbox id="levelA" text="A" checked="true"/>
-            <checkbox id="levelB" text="B" checked="false"/>
-            <checkbox id="levelC" text="C" checked="false"/>
+            <checkbox id="levelB" text="B" checked="true"/>
+            <checkbox id="levelC" text="C" checked="true"/>
         </horizontal>
         
         <horizontal marginTop="16">
