@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# 模型文件 (可选，如果想保留预训练模型可以注释掉)
+# models/*.pkl
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
