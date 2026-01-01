@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: event-signal-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=taurus
+      - POSTGRES_PASSWORD=taurus123
+      - POSTGRES_DB=event_signal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taurus -d event_signal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   signal-service:
     build: .
     container_name: event-signal
@@ -8,14 +24,20 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql+asyncpg://taurus:taurus123@db:5432/event_signal
       - API_HOST=0.0.0.0
       - API_PORT=8000
     volumes:
-      - ./models:/app/models  # 持久化模型文件
+      - ./models:/app/models
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+
+volumes:
+  postgres_data:
