@@ -61,20 +61,30 @@ pip install -r requirements.txt
 ### Docker 部署
 
 ```bash
-# 构建镜像
+cd event_signal
+
+# 方式1: docker-compose (推荐)
+# 先配置 .env 文件中的 DATABASE_URL
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+
+# 方式2: 手动构建运行
 docker build -t event-signal .
 
-# 运行容器
 docker run -d \
   --name event-signal \
   -p 8000:8000 \
   -e DATABASE_URL="postgresql+asyncpg://user:pass@host/db?ssl=require" \
   -v $(pwd)/models:/app/models \
   event-signal
-
-# 或使用 docker-compose
-docker-compose up -d
 ```
+
+注意：`models/` 目录需要挂载，里面包含预训练好的模型文件。首次部署前需要先本地运行 `python scripts/pretrain.py` 生成模型。
 
 ## 配置
 
