@@ -89,7 +89,8 @@ class SymbolHandler:
                 'confidence': signal.confidence,
                 'entry_price': signal.price,
                 'bet_amount': signal.bet_amount,
-                'created_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.utcnow().isoformat() + 'Z',
+                'status': 'pending',
             })
 
         return signal
@@ -123,6 +124,7 @@ class SymbolHandler:
                     'level': sig['level'],
                     'entry_price': entry,
                     'settle_price': current_price,
+                    'settle_at': datetime.utcnow().isoformat() + 'Z',
                     'is_win': is_win,
                     'pnl': pnl,
                 })

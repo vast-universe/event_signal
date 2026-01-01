@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  signal-service:
+    build: .
+    container_name: event-signal
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      - ./models:/app/models  # 持久化模型文件
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+ENV/
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# 环境文件
+.env
+.env.local
+
+# 测试
+tests/
+*.test.py
+
+# 文档
+*.md
+!README.md
+
+# 其他
+.DS_Store
+*.log

@@ -1,9 +1,9 @@
 """
 API 数据模型
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 
 class SignalResponse(BaseModel):
@@ -25,11 +25,27 @@ class SignalResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_serializer('created_at', 'settle_at')
+    def serialize_datetime(self, dt: Optional[datetime]) -> Optional[str]:
+        """序列化时间为 ISO 格式 + Z 后缀 (UTC)"""
+        if dt is None:
+            return None
+        return dt.isoformat() + 'Z'
+
 
 class SignalListResponse(BaseModel):
     """信号列表响应"""
     signals: List[SignalResponse]
     total: int
+
+
+class LevelStats(BaseModel):
+    """等级统计"""
+    total: int
+    wins: int
+    losses: int
+    win_rate: float
+    pnl: float
 
 
 class StatsResponse(BaseModel):
@@ -39,6 +55,7 @@ class StatsResponse(BaseModel):
     losses: int
     win_rate: float
     total_pnl: float
+    by_level: Optional[dict[str, LevelStats]] = None
 
 
 class HealthResponse(BaseModel):

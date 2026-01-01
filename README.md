@@ -51,9 +51,29 @@ event_signal/
 
 ## 安装
 
+### 本地开发
+
 ```bash
 cd event_signal
 pip install -r requirements.txt
+```
+
+### Docker 部署
+
+```bash
+# 构建镜像
+docker build -t event-signal .
+
+# 运行容器
+docker run -d \
+  --name event-signal \
+  -p 8000:8000 \
+  -e DATABASE_URL="postgresql+asyncpg://user:pass@host/db?ssl=require" \
+  -v $(pwd)/models:/app/models \
+  event-signal
+
+# 或使用 docker-compose
+docker-compose up -d
 ```
 
 ## 配置

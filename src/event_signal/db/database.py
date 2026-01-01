@@ -24,7 +24,14 @@ class Database:
 
     async def connect(self):
         """连接数据库"""
-        self.engine = create_async_engine(self.url, echo=False)
+        self.engine = create_async_engine(
+            self.url,
+            echo=False,
+            pool_pre_ping=True,  # 每次使用前检查连接是否有效
+            pool_recycle=300,    # 5分钟回收连接
+            pool_size=5,
+            max_overflow=10,
+        )
         self.session_factory = async_sessionmaker(
             self.engine,
             class_=AsyncSession,
@@ -34,7 +41,7 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-        print(f"✅ 数据库已连接: {self.url}")
+        print(f"✅ 数据库已连接")
 
     async def disconnect(self):
         """断开连接"""

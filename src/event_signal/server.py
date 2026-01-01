@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from .config import API_HOST, API_PORT, HORIZON, BREAKEVEN_WINRATE
@@ -37,6 +38,15 @@ app = FastAPI(
     description="币安事件合约信号系统",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# CORS 配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境改为具体域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(router)

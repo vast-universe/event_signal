@@ -114,10 +114,38 @@ class SignalRepository:
         wins = row.wins or 0
         total_pnl = row.total_pnl or 0
 
+        # 按等级统计
+        by_level = {}
+        for level in ['S', 'A', 'B', 'C']:
+            level_query = select(
+                func.count(Signal.id).label('total'),
+                func.sum(func.cast(Signal.is_win, Integer)).label('wins'),
+                func.sum(Signal.pnl).label('pnl'),
+            ).where(Signal.status == "settled", Signal.level == level)
+
+            if days:
+                level_query = level_query.where(Signal.created_at >= start_date)
+
+            level_result = await self.session.execute(level_query)
+            level_row = level_result.one()
+
+            level_total = level_row.total or 0
+            level_wins = level_row.wins or 0
+            level_pnl = level_row.pnl or 0
+
+            by_level[level] = {
+                "total": level_total,
+                "wins": level_wins,
+                "losses": level_total - level_wins,
+                "win_rate": level_wins / level_total if level_total > 0 else 0,
+                "pnl": level_pnl,
+            }
+
         return {
             "total_signals": total,
             "wins": wins,
             "losses": total - wins,
             "win_rate": wins / total if total > 0 else 0,
             "total_pnl": total_pnl,
+            "by_level": by_level,
         }
