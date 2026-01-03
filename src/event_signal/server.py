@@ -3,6 +3,7 @@ Event Signal 服务器
 集成信号服务 + API + WebSocket推送
 """
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -58,7 +59,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            # 处理客户端pong响应
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "pong":
+                    ws_manager.update_pong(websocket)
+            except Exception:
+                pass
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 

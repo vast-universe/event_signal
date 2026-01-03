@@ -9,7 +9,7 @@ var CONFIG = {
     ACCEPT_LEVELS: ["S", "A", "B", "C"],
     ACCEPT_SYMBOLS: "ALL",  // "ALL" / "BTCUSDT" / "ETHUSDT"
     AUTO_TRADE: true,
-    TRADE_DELAY: 300,
+    TRADE_DELAY: 100,  // 减少延迟 300->100
     VIBRATE: false,
 };
 
@@ -229,6 +229,15 @@ function scheduleReconnect() {
 function handleMessage(msg) {
     try {
         var data = JSON.parse(msg);
+        
+        // 响应服务器心跳
+        if (data.type === "ping") {
+            if (ws) {
+                ws.send(JSON.stringify({ type: "pong", ts: data.ts }));
+            }
+            return;
+        }
+        
         if (data.type === "signal") {
             handleSignal(data.data);
         }
@@ -289,7 +298,7 @@ function processQueue() {
             isTrading = false;
             // 处理下一个
             if (tradeQueue.length > 0) {
-                sleep(500);
+                sleep(200);  // 500->200
                 processQueue();
             }
         }
@@ -305,7 +314,7 @@ function executeTrade(symbol, direction, amount) {
         if (symbol !== currentSymbol) {
             if (switchSymbol(symbol)) {
                 currentSymbol = symbol;
-                sleep(500);
+                sleep(200);  // 500->200
             } else {
                 log("切换币对失败");
                 updateFloaty("✗ 切换币对失败", symbol);
@@ -314,20 +323,20 @@ function executeTrade(symbol, direction, amount) {
         }
         
         // 滚动确保按钮可见
-        swipe(device.width / 2, device.height * 0.6, device.width / 2, device.height * 0.4, 200);
+        swipe(device.width / 2, device.height * 0.6, device.width / 2, device.height * 0.4, 150);
         sleep(CONFIG.TRADE_DELAY);
         
         // 输入金额
-        var input = className("android.widget.EditText").findOne(800);
+        var input = className("android.widget.EditText").findOne(500);  // 800->500
         if (input) {
             input.click();
-            sleep(150);
+            sleep(80);  // 150->80
             input.setText(amount.toString());
             sleep(CONFIG.TRADE_DELAY);
             
             // 关闭键盘
             back();
-            sleep(300);
+            sleep(150);  // 300->150
         }
         
         // 点击按钮
@@ -340,9 +349,9 @@ function executeTrade(symbol, direction, amount) {
         
         // 点击确认弹窗
         if (success) {
-            sleep(300);
+            sleep(150);  // 300->150
             clickButton("确认") || clickButton("确定");
-            sleep(200);
+            sleep(100);  // 200->100
         }
         
         if (success) {
@@ -362,23 +371,23 @@ function switchSymbol(symbol) {
     log("切换币对: " + symbol);
     
     // 1. 点击当前币对触发底部弹窗
-    var symbolBtn = textContains("BTC").findOne(500) || textContains("ETH").findOne(500);
+    var symbolBtn = textContains("BTC").findOne(300) || textContains("ETH").findOne(300);
     if (!symbolBtn) {
-        symbolBtn = descContains("BTC").findOne(500) || descContains("ETH").findOne(500);
+        symbolBtn = descContains("BTC").findOne(300) || descContains("ETH").findOne(300);
     }
     
     if (symbolBtn) {
         var bounds = symbolBtn.bounds();
         click(bounds.centerX(), bounds.centerY());
-        sleep(500);  // 等待弹窗出现
+        sleep(300);  // 500->300 等待弹窗出现
         
         // 2. 在底部弹窗中点击目标币对
         var targetText = symbol.replace("USDT", "");  // BTCUSDT -> BTC
-        var target = text(targetText).findOne(800) || textContains(targetText).findOne(800);
+        var target = text(targetText).findOne(500) || textContains(targetText).findOne(500);
         if (target) {
             var targetBounds = target.bounds();
             click(targetBounds.centerX(), targetBounds.centerY());
-            sleep(300);
+            sleep(150);  // 300->150
             log("切换成功: " + symbol);
             return true;
         } else {
@@ -395,36 +404,32 @@ function switchSymbol(symbol) {
 
 function clickButton(btnText) {
     // 方式1: text 精确匹配
-    var btn = text(btnText).findOne(500);
+    var btn = text(btnText).findOne(300);  // 500->300
     if (btn) {
-        log("找到按钮(text): " + btnText);
         var bounds = btn.bounds();
         click(bounds.centerX(), bounds.centerY());
         return true;
     }
     
     // 方式2: textContains
-    btn = textContains(btnText).findOne(500);
+    btn = textContains(btnText).findOne(300);  // 500->300
     if (btn) {
-        log("找到按钮(textContains): " + btnText);
         var bounds = btn.bounds();
         click(bounds.centerX(), bounds.centerY());
         return true;
     }
     
     // 方式3: desc
-    btn = desc(btnText).findOne(300);
+    btn = desc(btnText).findOne(200);  // 300->200
     if (btn) {
-        log("找到按钮(desc): " + btnText);
         var bounds = btn.bounds();
         click(bounds.centerX(), bounds.centerY());
         return true;
     }
     
     // 方式4: descContains
-    btn = descContains(btnText).findOne(300);
+    btn = descContains(btnText).findOne(200);  // 300->200
     if (btn) {
-        log("找到按钮(descContains): " + btnText);
         var bounds = btn.bounds();
         click(bounds.centerX(), bounds.centerY());
         return true;
