@@ -447,8 +447,8 @@ if (!auto.service) {
     auto.waitFor();
 }
 
-// 保持屏幕常亮（可选，省电可注释掉）
-// device.keepScreenOn();
+// 保持屏幕常亮
+device.keepScreenOn();
 
 // 创建悬浮窗
 createFloaty();
