@@ -102,5 +102,5 @@ async def get_today_stats():
     db = await get_db()
     async with db.session() as session:
         repo = SignalRepository(session)
-        stats = await repo.get_stats(days=1)
+        stats = await repo.get_stats(today_only=True)
         return StatsResponse(**stats)

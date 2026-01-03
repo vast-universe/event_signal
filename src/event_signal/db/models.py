@@ -1,12 +1,15 @@
 """
 数据库模型
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Index, select, func
 
 from .database import Base
+
+# 北京时区 UTC+8
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 class Signal(Base):
@@ -96,14 +99,21 @@ class SignalRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_stats(self, days: int = None) -> dict:
+    async def get_stats(self, days: int = None, today_only: bool = False) -> dict:
         query = select(
             func.count(Signal.id).label('total'),
             func.sum(func.cast(Signal.is_win, Integer)).label('wins'),
             func.sum(Signal.pnl).label('total_pnl'),
         ).where(Signal.status == "settled")
 
-        if days:
+        start_date = None
+        if today_only:
+            # 北京时间今天0点 (转换为UTC存储)
+            now_beijing = datetime.now(BEIJING_TZ)
+            today_start_beijing = now_beijing.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_date = today_start_beijing.astimezone(timezone.utc).replace(tzinfo=None)
+            query = query.where(Signal.created_at >= start_date)
+        elif days:
             start_date = datetime.utcnow() - timedelta(days=days)
             query = query.where(Signal.created_at >= start_date)
 
@@ -123,7 +133,9 @@ class SignalRepository:
                 func.sum(Signal.pnl).label('pnl'),
             ).where(Signal.status == "settled", Signal.level == level)
 
-            if days:
+            if today_only:
+                level_query = level_query.where(Signal.created_at >= start_date)
+            elif days:
                 level_query = level_query.where(Signal.created_at >= start_date)
 
             level_result = await self.session.execute(level_query)
