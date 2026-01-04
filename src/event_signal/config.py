@@ -23,6 +23,9 @@ BREAKEVEN_WINRATE = 1 / (1 + PAYOUT_RATE)  # 盈亏平衡胜率 55.56%
 OVERBOUGHT = {"rsi6_min": 70, "bb_pct_min": 0.8}  # 超买做空
 OVERSOLD = {"rsi6_max": 30, "bb_pct_max": 0.2}  # 超卖做多
 
+# ========== 成交量过滤 ==========
+VOL_SPIKE_MAX = 3.0  # 成交量突变阈值，超过则跳过信号
+
 # ========== 信号阈值 ==========
 SIGNAL_THRESHOLDS = {"S": 0.75, "A": 0.70, "B": 0.65, "C": 0.60}
 

@@ -115,6 +115,12 @@ class FeatureEngine:
         else:
             feat["volatility"] = 0.0
 
+        # 13. 成交量突变（当前/上一根）
+        if len(v) >= 2 and v[-2] > 0:
+            feat["vol_spike"] = v[-1] / v[-2]
+        else:
+            feat["vol_spike"] = 1.0
+
         return feat
 
     def _calc_rsi(self, closes: np.ndarray, period: int) -> float:

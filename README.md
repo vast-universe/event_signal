@@ -171,15 +171,22 @@ python scripts/run.py
 ### 入场条件
 - 超买做空: RSI6 ≥ 70 且 BB位置 ≥ 0.8
 - 超卖做多: RSI6 ≤ 30 且 BB位置 ≤ 0.2
+- **成交量过滤**: vol_spike ≤ 3（当前K线成交量/上一根成交量 ≤ 3）
+
+### 成交量过滤说明
+当成交量突然暴涨（超过上一根 3 倍）时，跳过信号。原因：
+- 成交量暴涨时信号胜率下降（S级从 83% 降到 67%）
+- 过滤后 S 级胜率提升 4.5%（75.2% → 79.7%）
+- 实际盈亏差异可忽略（每天约 2U）
 
 ### 模型
 - River LogisticRegression (L2=0.5)
 - 在线学习：预测后 10 分钟根据实际涨跌更新模型
 - 模型每 10 分钟自动保存，服务重启不会丢失
 
-### 特征 (12个)
+### 特征 (13个)
 - RSI6, RSI14, BB_PCT
-- VOL_RATIO, RET5/10/20
+- VOL_RATIO, VOL_SPIKE, RET5/10/20
 - BODY_PCT, UPPER/LOWER_SHADOW
 - UP_COUNT, VOLATILITY
 

@@ -7,7 +7,7 @@ from typing import Optional
 
 from ..config import (
     OVERBOUGHT, OVERSOLD,
-    SIGNAL_THRESHOLDS,
+    SIGNAL_THRESHOLDS, VOL_SPIKE_MAX,
     get_signal_level, get_bet_amount
 )
 
@@ -39,6 +39,7 @@ class Strategy:
         self.signals_this_hour: list = []
         self.consecutive_losses = 0
         self.results: list = []
+        self.skipped_vol_spike = 0  # 因成交量暴涨跳过的信号数
 
     def check(self, price: float, features: dict,
               prob_down: float, prob_up: float) -> Optional[Signal]:
@@ -50,6 +51,7 @@ class Strategy:
 
         rsi6 = features.get('rsi6', 50)
         bb_pct = features.get('bb_pct', 0.5)
+        vol_spike = features.get('vol_spike', 1.0)
 
         signal = None
 
@@ -57,6 +59,12 @@ class Strategy:
         if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
             level = get_signal_level(prob_down)
             if level:
+                # vol_spike 过滤：成交量暴涨时跳过
+                if vol_spike > VOL_SPIKE_MAX:
+                    self.skipped_vol_spike += 1
+                    print(f"\n⚠️ {self.symbol} 做空信号跳过: vol_spike={vol_spike:.1f} > {VOL_SPIKE_MAX}")
+                    return None
+                
                 signal = Signal(
                     symbol=self.symbol,
                     direction="DOWN",
@@ -65,13 +73,19 @@ class Strategy:
                     confidence=prob_down,
                     bet_amount=get_bet_amount(level),
                     timestamp=now,
-                    details=f"RSI6={rsi6:.0f} BB={bb_pct:.2f} P(跌)={prob_down:.1%}"
+                    details=f"RSI6={rsi6:.0f} BB={bb_pct:.2f} P(跌)={prob_down:.1%} vol_spike={vol_spike:.1f}"
                 )
 
         # 超卖区域 → 做多信号
         elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
             level = get_signal_level(prob_up)
             if level:
+                # vol_spike 过滤：成交量暴涨时跳过
+                if vol_spike > VOL_SPIKE_MAX:
+                    self.skipped_vol_spike += 1
+                    print(f"\n⚠️ {self.symbol} 做多信号跳过: vol_spike={vol_spike:.1f} > {VOL_SPIKE_MAX}")
+                    return None
+                
                 signal = Signal(
                     symbol=self.symbol,
                     direction="UP",
@@ -80,7 +94,7 @@ class Strategy:
                     confidence=prob_up,
                     bet_amount=get_bet_amount(level),
                     timestamp=now,
-                    details=f"RSI6={rsi6:.0f} BB={bb_pct:.2f} P(涨)={prob_up:.1%}"
+                    details=f"RSI6={rsi6:.0f} BB={bb_pct:.2f} P(涨)={prob_up:.1%} vol_spike={vol_spike:.1f}"
                 )
 
         if signal:
