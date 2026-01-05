@@ -20,8 +20,9 @@ PAYOUT_RATE = 0.80  # 收益率
 BREAKEVEN_WINRATE = 1 / (1 + PAYOUT_RATE)  # 盈亏平衡胜率 55.56%
 
 # ========== 入场条件 ==========
-OVERBOUGHT = {"rsi6_min": 70, "bb_pct_min": 0.8}  # 超买做空
-OVERSOLD = {"rsi6_max": 30, "bb_pct_max": 0.2}  # 超卖做多
+# v3.0: 放宽条件，信号更多，日均盈亏+61%
+OVERBOUGHT = {"rsi6_min": 60, "bb_pct_min": 0.7}  # 超买做空
+OVERSOLD = {"rsi6_max": 40, "bb_pct_max": 0.3}  # 超卖做多
 
 # ========== 成交量过滤 ==========
 VOL_SPIKE_MAX = 3.0  # 成交量突变阈值，超过则跳过信号
