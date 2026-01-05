@@ -303,9 +303,9 @@ class SignalService:
         status = "收盘" if is_closed else "实时"
         now = datetime.now().strftime("%H:%M:%S")
 
-        if rsi6 >= 70 and bb_pct >= 0.8:
+        if rsi6 >= 60 and bb_pct >= 0.7:
             indicator = f"🔴超买 RSI={rsi6:.0f}"
-        elif rsi6 <= 30 and bb_pct <= 0.2:
+        elif rsi6 <= 40 and bb_pct <= 0.3:
             indicator = f"🟢超卖 RSI={rsi6:.0f}"
         else:
             indicator = f"RSI={rsi6:.0f} BB={bb_pct:.2f}"
