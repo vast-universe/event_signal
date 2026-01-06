@@ -4,7 +4,9 @@ Event Signal 服务器
 """
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,12 +19,15 @@ from .api import router, set_service_ref, ws_manager
 
 server: Optional[SignalService] = None
 
+# 默认数据目录：event_signal/data/
+DATA_DIR = os.getenv("DATA_DIR", str(Path(__file__).parent.parent.parent / "data"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI 生命周期"""
     global server
-    server = SignalService()
+    server = SignalService(data_dir=DATA_DIR)
     set_service_ref(server)
     await server.start()
 

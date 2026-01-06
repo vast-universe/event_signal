@@ -34,8 +34,11 @@ env/
 # 数据库文件
 data/*.db
 
-# 模型文件 (可选，如果想保留预训练模型可以注释掉)
-# models/*.pkl
+# K线数据文件（太大，不提交到git）
+data/*.csv
+
+# 模型文件 (运行时生成，不需要提交)
+models/*.pkl
 
 # Logs
 *.log

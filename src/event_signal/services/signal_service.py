@@ -48,6 +48,9 @@ class SymbolHandler:
 
         self.last_features = feat
 
+        rsi6 = feat.get('rsi6', 50)
+        bb_pct = feat.get('bb_pct', 0.5)
+
         prob_down = self.model.predict_down(feat)
         prob_up = self.model.predict_up(feat)
 
@@ -55,13 +58,23 @@ class SymbolHandler:
         await ws_manager.send_ticker({
             'symbol': self.symbol,
             'price': price,
-            'rsi6': feat.get('rsi6', 50),
+            'rsi6': rsi6,
             'rsi14': feat.get('rsi14', 50),
-            'bb_pct': feat.get('bb_pct', 0.5),
+            'bb_pct': bb_pct,
             'prob_down': prob_down,
             'prob_up': prob_up,
             'timestamp': datetime.utcnow().isoformat() + 'Z',
         })
+
+        # 关键改动：所有超买超卖样本都添加到学习队列（与回测保持一致）
+        # 这样模型能学习更多样本，提高预测准确性
+        from ..config import OVERBOUGHT, OVERSOLD
+        if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
+            # 超买区域 - 添加做空学习样本
+            self.model.add_pending(kline.timestamp, feat, kline.close, "DOWN")
+        elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
+            # 超卖区域 - 添加做多学习样本
+            self.model.add_pending(kline.timestamp, feat, kline.close, "UP")
 
         signal = self.strategy.check(price, feat, prob_down, prob_up)
 
@@ -90,7 +103,6 @@ class SymbolHandler:
                 'bet_amount': signal.bet_amount,
             })
 
-            self.model.add_pending(kline.timestamp, feat, kline.close, signal.direction)
             self.daily_signals += 1
 
             await ws_manager.send_signal({
@@ -156,32 +168,248 @@ class SymbolHandler:
 class SignalService:
     """信号服务"""
 
-    def __init__(self, symbols: list = None, load_pretrained: bool = True):
+    def __init__(self, symbols: list = None, data_dir: str = None):
+        """
+        初始化信号服务
+        
+        Args:
+            symbols: 交易对列表
+            data_dir: 数据目录路径
+        """
         self.symbols = symbols or SYMBOLS
         self.handlers: Dict[str, SymbolHandler] = {}
         self.last_save_time = datetime.now()
         self.ws = None
         self.db = None
         self._lines = {}
-        self._current_prices: Dict[str, float] = {}  # 实时价格缓存
+        self._current_prices: Dict[str, float] = {}
         self._settlement_task = None
+        self.data_dir = data_dir
 
+        # 初始化 handlers（模型稍后在 start() 中加载）
         for symbol in self.symbols:
-            model = None
-            if load_pretrained:
-                model = self._load_model(symbol)
-            self.handlers[symbol] = SymbolHandler(symbol, model)
+            self.handlers[symbol] = SymbolHandler(symbol, None)
 
-    def _load_model(self, symbol: str) -> Optional[RiverModel]:
-        path = f"models/{symbol}.pkl"
-        if os.path.exists(path):
-            try:
-                model = RiverModel.load(path)
-                print(f"✅ 加载模型: {symbol} (样本数: {model.total_samples})")
-                return model
-            except Exception as e:
-                print(f"⚠️ 加载模型失败: {symbol} - {e}")
-        return None
+    def _train_from_local_data(self, symbol: str, data_dir: str, 
+                                train_years: list = None) -> Optional[tuple]:
+        """
+        从本地data目录训练模型（与回测脚本完全一致的逻辑）
+        只训练历史数据，不包含API补齐
+        """
+        import pandas as pd
+        from pathlib import Path
+        from ..config import OVERBOUGHT, OVERSOLD
+        
+        if train_years is None:
+            train_years = [2024, 2025]
+        
+        data_path = Path(data_dir)
+        
+        # 加载本地数据
+        dfs = []
+        for year in train_years:
+            for month in range(1, 13):
+                filepath = data_path / f"{symbol}-1m-{year}-{month:02d}.csv"
+                if filepath.exists():
+                    df = pd.read_csv(filepath, header=None,
+                                   names=['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                                          'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                                          'taker_buy_quote', 'ignore'])
+                    if df['timestamp'].iloc[0] > 1e15:
+                        df['timestamp'] = df['timestamp'] // 1000
+                    dfs.append(df)
+        
+        # 也加载当年的本地数据（如果有）
+        current_year = datetime.utcnow().year
+        if current_year not in train_years:
+            for month in range(1, 13):
+                filepath = data_path / f"{symbol}-1m-{current_year}-{month:02d}.csv"
+                if filepath.exists():
+                    df = pd.read_csv(filepath, header=None,
+                                   names=['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                                          'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                                          'taker_buy_quote', 'ignore'])
+                    if df['timestamp'].iloc[0] > 1e15:
+                        df['timestamp'] = df['timestamp'] // 1000
+                    dfs.append(df)
+            # 也检查日级文件
+            for day in range(1, 32):
+                for month in range(1, 13):
+                    filepath = data_path / f"{symbol}-1m-{current_year}-{month:02d}-{day:02d}.csv"
+                    if filepath.exists():
+                        df = pd.read_csv(filepath, header=None,
+                                       names=['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                                              'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                                              'taker_buy_quote', 'ignore'])
+                        if df['timestamp'].iloc[0] > 1e15:
+                            df['timestamp'] = df['timestamp'] // 1000
+                        dfs.append(df)
+        
+        if not dfs:
+            print(f"  ⚠️ {symbol}: 未找到训练数据")
+            return None
+        
+        data = pd.concat(dfs, ignore_index=True).sort_values('timestamp').drop_duplicates('timestamp')
+        data['future_price'] = data['close'].shift(-HORIZON)
+        
+        last_ts = int(data['timestamp'].max())
+        print(f"  {symbol}: 加载 {len(data):,} 条本地K线 (截止 {datetime.utcfromtimestamp(last_ts/1000).strftime('%Y-%m-%d %H:%M')})")
+        
+        # 初始化模型和特征引擎
+        model = RiverModel(horizon_minutes=HORIZON)
+        engine = FeatureEngine(window_size=100)
+        
+        trained_up, trained_down = self._train_on_dataframe(model, engine, data, symbol)
+        
+        print(f"  {symbol}: 本地数据训练完成 - 做空 {trained_down:,} 样本, 做多 {trained_up:,} 样本")
+        
+        # 把训练好的特征引擎也传给 handler
+        self.handlers[symbol].features = engine
+        
+        return model, last_ts
+    
+    def _train_on_dataframe(self, model: RiverModel, engine: FeatureEngine, 
+                            data, symbol: str) -> tuple:
+        """在 DataFrame 上训练模型"""
+        import pandas as pd
+        from ..config import OVERBOUGHT, OVERSOLD
+        
+        FEATURE_COLS = [
+            'rsi6', 'rsi14', 'bb_pct', 'vol_ratio',
+            'ret5', 'ret10', 'ret20',
+            'body_pct', 'upper_shadow', 'lower_shadow',
+            'up_count', 'volatility'
+        ]
+        
+        trained_up = 0
+        trained_down = 0
+        
+        for _, row in data.iterrows():
+            kline = Kline(
+                timestamp=int(row['timestamp']),
+                open=float(row['open']),
+                high=float(row['high']),
+                low=float(row['low']),
+                close=float(row['close']),
+                volume=float(row['volume'])
+            )
+            engine.add_kline(kline)
+            
+            if not engine.ready():
+                continue
+            
+            feat = engine.compute()
+            if feat is None:
+                continue
+            
+            rsi6 = feat['rsi6']
+            bb_pct = feat['bb_pct']
+            price = row['close']
+            future_price = row.get('future_price')
+            
+            if future_price is None or pd.isna(future_price):
+                continue
+            
+            x = {col: float(feat[col]) for col in FEATURE_COLS}
+            
+            # 超买 → 做空训练
+            if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
+                y = 1 if future_price < price else 0
+                model.model_down.learn_one(x, y)
+                model.stats['down']['total'] += 1
+                if y == 1:
+                    model.stats['down']['correct'] += 1
+                trained_down += 1
+            
+            # 超卖 → 做多训练
+            elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
+                y = 1 if future_price > price else 0
+                model.model_up.learn_one(x, y)
+                model.stats['up']['total'] += 1
+                if y == 1:
+                    model.stats['up']['correct'] += 1
+                trained_up += 1
+        
+        return trained_up, trained_down
+    
+    async def _fetch_and_train_from_api(self, symbol: str, model: RiverModel, 
+                                         engine: FeatureEngine, start_ts: int):
+        """从 API 获取历史 K 线并继续训练，补齐到当前时间"""
+        import pandas as pd
+        from ..config import OVERBOUGHT, OVERSOLD
+        
+        url = "https://api.binance.com/api/v3/klines"
+        current_ts = int(datetime.utcnow().timestamp() * 1000)
+        
+        # 计算需要获取多少条K线
+        minutes_gap = (current_ts - start_ts) // 60000
+        if minutes_gap <= HORIZON:
+            print(f"  {symbol}: 本地数据已是最新，无需API补齐")
+            return 0, 0
+        
+        print(f"  {symbol}: 从API补齐 {minutes_gap:,} 分钟的K线...")
+        
+        FEATURE_COLS = [
+            'rsi6', 'rsi14', 'bb_pct', 'vol_ratio',
+            'ret5', 'ret10', 'ret20',
+            'body_pct', 'upper_shadow', 'lower_shadow',
+            'up_count', 'volatility'
+        ]
+        
+        trained_up = 0
+        trained_down = 0
+        total_klines = 0
+        
+        async with aiohttp.ClientSession() as session:
+            fetch_start = start_ts + 60000  # 从下一分钟开始
+            
+            while fetch_start < current_ts - HORIZON * 60000:  # 留出 HORIZON 分钟给 future_price
+                params = {
+                    "symbol": symbol,
+                    "interval": "1m",
+                    "startTime": fetch_start,
+                    "limit": 1000
+                }
+                
+                try:
+                    async with session.get(url, params=params) as resp:
+                        if resp.status != 200:
+                            print(f"  {symbol}: API请求失败 {resp.status}")
+                            break
+                        
+                        klines = await resp.json()
+                        if not klines:
+                            break
+                        
+                        # 转换为 DataFrame
+                        df = pd.DataFrame(klines, columns=[
+                            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                            'taker_buy_quote', 'ignore'
+                        ])
+                        df['timestamp'] = df['timestamp'].astype(int)
+                        df['open'] = df['open'].astype(float)
+                        df['high'] = df['high'].astype(float)
+                        df['low'] = df['low'].astype(float)
+                        df['close'] = df['close'].astype(float)
+                        df['volume'] = df['volume'].astype(float)
+                        df['future_price'] = df['close'].shift(-HORIZON)
+                        
+                        # 训练
+                        up, down = self._train_on_dataframe(model, engine, df, symbol)
+                        trained_up += up
+                        trained_down += down
+                        total_klines += len(klines)
+                        
+                        # 更新起始时间
+                        fetch_start = int(klines[-1][0]) + 60000
+                        
+                except Exception as e:
+                    print(f"  {symbol}: API请求异常 - {e}")
+                    break
+        
+        print(f"  {symbol}: API补齐完成 - {total_klines:,} 条K线, 做空 {trained_down:,}, 做多 {trained_up:,}")
+        return trained_up, trained_down
 
     def _save_models(self):
         os.makedirs("models", exist_ok=True)
@@ -227,11 +455,23 @@ class SignalService:
             else:
                 print("  无待结算信号")
 
-    async def _fetch_history(self):
+    async def _fetch_history(self, skip_if_trained: bool = False):
+        """获取历史K线数据
+        
+        Args:
+            skip_if_trained: 如果已从本地数据训练，跳过API获取（特征引擎已有数据）
+        """
         url = "https://api.binance.com/api/v3/klines"
 
         async with aiohttp.ClientSession() as session:
             for symbol in self.symbols:
+                handler = self.handlers[symbol]
+                
+                # 如果已从本地数据训练，特征引擎已有足够数据，跳过
+                if skip_if_trained and handler.features.ready():
+                    print(f"  {symbol}: 已从本地数据训练，跳过API获取 ({len(handler.features.klines)} 根K线)")
+                    continue
+                
                 print(f"获取 {symbol} 历史K线...")
                 params = {"symbol": symbol, "interval": "1m", "limit": 100}
 
@@ -239,7 +479,6 @@ class SignalService:
                     async with session.get(url, params=params) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            handler = self.handlers[symbol]
 
                             for k in data[:-1]:
                                 kline = Kline(
@@ -394,13 +633,48 @@ class SignalService:
         print(f"  交易对: {', '.join(self.symbols)}")
         print(f"  预测周期: {HORIZON}分钟")
         print(f"  盈亏平衡胜率: {BREAKEVEN_WINRATE:.2%}")
+        print(f"  训练模式: 从本地数据训练 + API补齐 (与回测一致)")
         print("=" * 70)
+
+        # 从本地数据训练模型
+        last_timestamps = {}
+        
+        if self.data_dir:
+            print(f"\n📚 从本地数据训练模型...")
+            for symbol in self.symbols:
+                result = self._train_from_local_data(symbol, self.data_dir)
+                if result:
+                    model, last_ts = result
+                    self.handlers[symbol].model = model
+                    last_timestamps[symbol] = last_ts
+                else:
+                    # 训练失败，使用新模型
+                    self.handlers[symbol].model = RiverModel(horizon_minutes=HORIZON)
+            
+            # 从 API 补齐到当前时间
+            if last_timestamps:
+                print(f"\n🌐 从API补齐到当前时间...")
+                for symbol in self.symbols:
+                    if symbol in last_timestamps:
+                        handler = self.handlers[symbol]
+                        await self._fetch_and_train_from_api(
+                            symbol, 
+                            handler.model, 
+                            handler.features,
+                            last_timestamps[symbol]
+                        )
+        else:
+            print(f"\n⚠️ 未指定数据目录，使用新模型...")
+            for symbol in self.symbols:
+                self.handlers[symbol].model = RiverModel(horizon_minutes=HORIZON)
 
         self.db = await get_db()
         await self._recover_pending_signals()
-        await self._fetch_history()
+        
+        # 如果从本地数据训练，特征引擎已有数据，可以跳过API获取
+        await self._fetch_history(skip_if_trained=bool(last_timestamps))
 
-        print("\n开始监听K线...")
+        print("\n✅ 初始化完成，开始监听K线...")
         print()
         print()
         

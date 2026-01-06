@@ -1,0 +1,6 @@
+# 此目录存放 K 线训练数据
+# 文件命名格式: {SYMBOL}-1m-{YEAR}-{MONTH}.csv
+# 例如: BTCUSDT-1m-2024-01.csv
+#
+# 数据来源: Binance 历史 K 线数据
+# 下载地址: https://data.binance.vision/

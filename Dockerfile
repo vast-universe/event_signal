@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制源代码
 COPY src/ src/
 COPY scripts/ scripts/
+COPY data/ data/
 COPY pyproject.toml .
 
 # 创建模型目录

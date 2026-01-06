@@ -141,8 +141,25 @@ python scripts/pretrain.py
 ### 2. 运行服务
 
 ```bash
+# 默认模式：从本地数据训练 + API补齐到当前时间（推荐，与回测一致）
 python scripts/run.py
+
+# 加载预训练模型（不推荐，模型是静态的）
+python scripts/run.py --pretrained
+
+# 从零开始（不训练，不加载）
+python scripts/run.py --fresh
+
+# 指定数据目录
+python scripts/run.py --data-dir /path/to/data
 ```
+
+启动流程：
+1. 从本地 `data/` 目录加载 2024-2025 年 + 当年已有的 K 线数据训练
+2. 通过 Binance API 补齐从本地数据最后时间戳到当前时间的 K 线，继续训练
+3. 切换到 WebSocket 实时监听，边预测边学习
+
+这样可以确保线上运行效果与回测完全一致。
 
 ### 3. API 接口
 
