@@ -105,5 +105,9 @@ class ConnectionManager:
         """发送行情（非阻塞）"""
         self.broadcast_nowait({"type": "ticker", "data": ticker_data})
 
+    async def send_kline(self, kline_data: dict):
+        """发送K线（非阻塞）"""
+        self.broadcast_nowait({"type": "kline", "data": kline_data})
+
 
 ws_manager = ConnectionManager()

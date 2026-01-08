@@ -28,8 +28,13 @@ class FeatureEngine:
         self._cache = {}
 
     def add_kline(self, kline: Kline):
-        """添加K线并清除缓存"""
-        self.klines.append(kline)
+        """添加K线并清除缓存（自动去重）"""
+        # 检查是否重复（同一时间戳）
+        if self.klines and self.klines[-1].timestamp == kline.timestamp:
+            # 更新最后一根 K 线（可能是实时更新）
+            self.klines[-1] = kline
+        else:
+            self.klines.append(kline)
         self._cache.clear()
 
     def ready(self) -> bool:
