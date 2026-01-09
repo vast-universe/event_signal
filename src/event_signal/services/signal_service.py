@@ -650,7 +650,8 @@ class SignalService:
             if signal:
                 self._print_signal(signal)
 
-        self._print_status(symbol, price, is_closed)
+        # 实时日志已关闭
+        # self._print_status(symbol, price, is_closed)
 
     def _print_status(self, symbol: str, price: float, is_closed: bool):
         handler = self.handlers[symbol]
