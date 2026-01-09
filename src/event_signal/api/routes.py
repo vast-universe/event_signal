@@ -1,11 +1,14 @@
 """
 API 路由
 """
+import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
@@ -20,6 +23,7 @@ from .schemas import SignalResponse, SignalListResponse, StatsResponse, HealthRe
 router = APIRouter(prefix="/api", tags=["signals"])
 
 _service_ref = None
+_backtest_executor = ThreadPoolExecutor(max_workers=1)  # 回测专用线程池，不阻塞主服务
 
 
 def set_service_ref(service):
@@ -193,127 +197,124 @@ def _get_level(prob: float) -> Optional[str]:
     return None
 
 
-@router.get("/backtest/today")
-async def backtest_today(
-    date: Optional[str] = Query(None, description="日期 YYYY-MM-DD，默认今天")
-):
+async def _fetch_klines_from_api_async(symbol: str, start_ts: int, end_ts: int) -> pd.DataFrame:
+    """从 Binance API 获取 K 线数据（使用 aiohttp，与启动时一致）"""
+    url = "https://api.binance.com/api/v3/klines"
+    all_klines = []
+    
+    fetch_start = start_ts
+    
+    async with aiohttp.ClientSession() as session:
+        while fetch_start < end_ts:
+            params = {
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": fetch_start,
+                "endTime": end_ts - 1,
+                "limit": 1000
+            }
+            
+            try:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status != 200:
+                        print(f"[回测] API 返回 {resp.status}")
+                        break
+                    klines = await resp.json()
+                
+                if not klines:
+                    break
+                
+                for k in klines:
+                    all_klines.append({
+                        'timestamp': int(k[0]),
+                        'open': float(k[1]),
+                        'high': float(k[2]),
+                        'low': float(k[3]),
+                        'close': float(k[4]),
+                        'volume': float(k[5]),
+                    })
+                
+                fetch_start = int(klines[-1][0]) + 60000
+                print(f"[回测] {symbol}: 已获取 {len(all_klines)} 条 K 线")
+                
+            except Exception as e:
+                print(f"[回测] API 请求失败: {e}")
+                break
+    
+    return pd.DataFrame(all_klines) if all_klines else pd.DataFrame()
+
+
+def _run_backtest_sync(symbol: str, train_df: pd.DataFrame, test_df: pd.DataFrame) -> dict:
     """
-    独立回测：从头预训练新模型，预测指定日期信号，与实盘对比
-    
-    流程：
-    1. 创建全新的模型（不用实盘模型）
-    2. 用历史数据预训练（到测试日前一天）
-    3. 用测试日数据预测信号
-    4. 与数据库中的实盘信号对比
-    
-    这样可以验证实盘的预训练逻辑是否正确
+    同步执行单个交易对的回测训练和预测（在线程池中运行，不阻塞主服务）
     """
     from river import linear_model, preprocessing
     from river.compose import Pipeline
     from ..core import FeatureEngine, Kline
     from ..config import MODEL_L2
     
-    # 解析日期
-    if date:
-        try:
-            target_date = datetime.strptime(date, '%Y-%m-%d')
-        except ValueError:
-            raise HTTPException(status_code=400, detail="日期格式错误，应为 YYYY-MM-DD")
-    else:
-        target_date = datetime.utcnow()
+    print(f"[回测] {symbol}: 开始训练...")
     
-    date_str = target_date.strftime('%Y-%m-%d')
-    target_ts = int(target_date.replace(hour=0, minute=0, second=0).timestamp() * 1000)
+    # 创建全新模型
+    model_down = Pipeline(
+        preprocessing.StandardScaler(),
+        linear_model.LogisticRegression(l2=MODEL_L2),
+    )
+    model_up = Pipeline(
+        preprocessing.StandardScaler(),
+        linear_model.LogisticRegression(l2=MODEL_L2),
+    )
+    engine = FeatureEngine(window_size=100)
     
-    # 获取数据目录
-    from ..server import DATA_DIR
-    data_path = Path(DATA_DIR)
+    # 预训练
+    train_df = train_df.copy()
+    train_df['future_price'] = train_df['close'].shift(-HORIZON)
+    trained_up, trained_down = 0, 0
     
+    for _, row in train_df.iterrows():
+        kline = Kline(
+            timestamp=int(row['timestamp']),
+            open=float(row['open']),
+            high=float(row['high']),
+            low=float(row['low']),
+            close=float(row['close']),
+            volume=float(row['volume'])
+        )
+        engine.add_kline(kline)
+        
+        if not engine.ready():
+            continue
+        
+        feat = engine.compute()
+        if feat is None:
+            continue
+        
+        rsi6 = feat['rsi6']
+        bb_pct = feat['bb_pct']
+        price = row['close']
+        future_price = row.get('future_price')
+        
+        if pd.isna(future_price):
+            continue
+        
+        x = {col: float(feat[col]) for col in FEATURE_COLS}
+        
+        if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
+            y = 1 if future_price < price else 0
+            model_down.learn_one(x, y)
+            trained_down += 1
+        elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
+            y = 1 if future_price > price else 0
+            model_up.learn_one(x, y)
+            trained_up += 1
+    
+    print(f"[回测] {symbol}: 训练完成 - 做空 {trained_down}, 做多 {trained_up}")
+    
+    # 测试日预测
     backtest_signals = []
-    model_info = {}
     
-    for symbol in ['BTCUSDT', 'ETHUSDT']:
-        # ========== 1. 创建全新模型 ==========
-        model_down = Pipeline(
-            preprocessing.StandardScaler(),
-            linear_model.LogisticRegression(l2=MODEL_L2),
-        )
-        model_up = Pipeline(
-            preprocessing.StandardScaler(),
-            linear_model.LogisticRegression(l2=MODEL_L2),
-        )
-        engine = FeatureEngine(window_size=100)
-        
-        # ========== 2. 加载并预训练 ==========
-        train_data = _load_all_data(data_path, symbol)
-        if train_data.empty:
-            continue
-        
-        # 分割训练和测试数据
-        train_df = train_data[train_data['timestamp'] < target_ts].copy()
-        test_df = train_data[
-            (train_data['timestamp'] >= target_ts) & 
-            (train_data['timestamp'] < target_ts + 24*60*60*1000)
-        ].copy()
-        
-        if train_df.empty:
-            continue
-        
-        # 预训练（和实盘一样的逻辑）
-        train_df['future_price'] = train_df['close'].shift(-HORIZON)
-        trained_up, trained_down = 0, 0
-        
-        for _, row in train_df.iterrows():
-            kline = Kline(
-                timestamp=int(row['timestamp']),
-                open=float(row['open']),
-                high=float(row['high']),
-                low=float(row['low']),
-                close=float(row['close']),
-                volume=float(row['volume'])
-            )
-            engine.add_kline(kline)
-            
-            if not engine.ready():
-                continue
-            
-            feat = engine.compute()
-            if feat is None:
-                continue
-            
-            rsi6 = feat['rsi6']
-            bb_pct = feat['bb_pct']
-            price = row['close']
-            future_price = row.get('future_price')
-            
-            if pd.isna(future_price):
-                continue
-            
-            x = {col: float(feat[col]) for col in FEATURE_COLS}
-            
-            # 超买 → 做空训练
-            if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
-                y = 1 if future_price < price else 0
-                model_down.learn_one(x, y)
-                trained_down += 1
-            
-            # 超卖 → 做多训练
-            elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
-                y = 1 if future_price > price else 0
-                model_up.learn_one(x, y)
-                trained_up += 1
-        
-        model_info[symbol] = {
-            'trained_down': trained_down,
-            'trained_up': trained_up,
-            'train_klines': len(train_df),
-            'test_klines': len(test_df),
-        }
-        
-        # ========== 3. 测试日预测 ==========
-        if test_df.empty:
-            continue
-        
+    if not test_df.empty:
+        test_df = test_df.copy()
         test_df['future_price'] = test_df['close'].shift(-HORIZON)
         
         for _, row in test_df.iterrows():
@@ -342,9 +343,10 @@ async def backtest_today(
             
             x = {col: float(feat[col]) for col in FEATURE_COLS}
             ts = pd.to_datetime(row['timestamp'], unit='ms')
-            ts_str = ts.strftime('%Y-%m-%d %H:%M')
+            # 转换为北京时间
+            ts_beijing = ts + pd.Timedelta(hours=8)
+            ts_str = ts_beijing.strftime('%Y-%m-%d %H:%M')
             
-            # 超买 → 做空
             if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
                 if vol_spike <= VOL_SPIKE_MAX:
                     proba = model_down.predict_proba_one(x)
@@ -355,8 +357,8 @@ async def backtest_today(
                             is_win = None
                             pnl = None
                             if not pd.isna(future_price):
-                                is_win = future_price < price
-                                pnl = BET_AMOUNTS[level] * PAYOUT_RATE if is_win else -BET_AMOUNTS[level]
+                                is_win = bool(future_price < price)
+                                pnl = float(BET_AMOUNTS[level] * PAYOUT_RATE if is_win else -BET_AMOUNTS[level])
                             
                             backtest_signals.append({
                                 'timestamp': ts_str,
@@ -364,8 +366,8 @@ async def backtest_today(
                                 'direction': 'DOWN',
                                 'level': level,
                                 'confidence': round(p, 4),
-                                'entry_price': price,
-                                'settle_price': future_price if not pd.isna(future_price) else None,
+                                'entry_price': float(price),
+                                'settle_price': float(future_price) if not pd.isna(future_price) else None,
                                 'is_win': is_win,
                                 'pnl': pnl,
                                 'rsi6': round(rsi6, 1),
@@ -373,7 +375,6 @@ async def backtest_today(
                                 'vol_spike': round(vol_spike, 2),
                             })
             
-            # 超卖 → 做多
             elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
                 if vol_spike <= VOL_SPIKE_MAX:
                     proba = model_up.predict_proba_one(x)
@@ -384,8 +385,8 @@ async def backtest_today(
                             is_win = None
                             pnl = None
                             if not pd.isna(future_price):
-                                is_win = future_price > price
-                                pnl = BET_AMOUNTS[level] * PAYOUT_RATE if is_win else -BET_AMOUNTS[level]
+                                is_win = bool(future_price > price)
+                                pnl = float(BET_AMOUNTS[level] * PAYOUT_RATE if is_win else -BET_AMOUNTS[level])
                             
                             backtest_signals.append({
                                 'timestamp': ts_str,
@@ -393,122 +394,193 @@ async def backtest_today(
                                 'direction': 'UP',
                                 'level': level,
                                 'confidence': round(p, 4),
-                                'entry_price': price,
-                                'settle_price': future_price if not pd.isna(future_price) else None,
+                                'entry_price': float(price),
+                                'settle_price': float(future_price) if not pd.isna(future_price) else None,
                                 'is_win': is_win,
                                 'pnl': pnl,
                                 'rsi6': round(rsi6, 1),
                                 'bb_pct': round(bb_pct, 3),
                                 'vol_spike': round(vol_spike, 2),
                             })
-    
-    # ========== 4. 从数据库获取实盘信号 ==========
-    db = await get_db()
-    live_signals = []
-    async with db.session() as session:
-        repo = SignalRepository(session)
-        all_signals = await repo.get_latest(500)
         
-        for sig in all_signals:
-            sig_date = sig.created_at.strftime('%Y-%m-%d')
-            if sig_date == date_str:
-                live_signals.append({
-                    'id': sig.id,
-                    'timestamp': sig.created_at.strftime('%Y-%m-%d %H:%M'),
-                    'symbol': sig.symbol,
-                    'direction': sig.direction,
-                    'level': sig.level,
-                    'confidence': round(sig.confidence, 4),
-                    'entry_price': sig.entry_price,
-                    'settle_price': sig.settle_price,
-                    'is_win': sig.is_win,
-                    'pnl': sig.pnl,
-                    'status': sig.status,
-                })
-    
-    # ========== 5. 对比分析 ==========
-    bt_set = set((s['timestamp'], s['symbol'], s['direction']) for s in backtest_signals)
-    live_set = set((s['timestamp'], s['symbol'], s['direction']) for s in live_signals)
-    
-    common = bt_set & live_set
-    only_backtest = bt_set - live_set
-    only_live = live_set - bt_set
-    
-    # 统计
-    bt_wins = sum(1 for s in backtest_signals if s.get('is_win') is True)
-    bt_total = sum(1 for s in backtest_signals if s.get('is_win') is not None)
-    bt_pnl = sum(s.get('pnl', 0) or 0 for s in backtest_signals)
-    
-    live_wins = sum(1 for s in live_signals if s.get('is_win') is True)
-    live_total = sum(1 for s in live_signals if s.get('is_win') is not None)
-    live_pnl = sum(s.get('pnl', 0) or 0 for s in live_signals)
+        print(f"[回测] {symbol}: 预测完成 - {len(backtest_signals)} 个信号")
     
     return {
-        'date': date_str,
-        'mode': 'independent_backtest',  # 标记是独立回测
-        'model_info': model_info,
-        'backtest': {
-            'signals': backtest_signals,
-            'count': len(backtest_signals),
-            'win_rate': bt_wins / bt_total if bt_total > 0 else None,
-            'pnl': bt_pnl,
-        },
-        'live': {
-            'signals': live_signals,
-            'count': len(live_signals),
-            'win_rate': live_wins / live_total if live_total > 0 else None,
-            'pnl': live_pnl,
-        },
-        'comparison': {
-            'common': len(common),
-            'only_backtest': len(only_backtest),
-            'only_live': len(only_live),
-            'match_rate': len(common) / max(len(bt_set), len(live_set), 1),
-        },
-        'only_backtest_signals': [
-            s for s in backtest_signals 
-            if (s['timestamp'], s['symbol'], s['direction']) in only_backtest
-        ][:10],
-        'only_live_signals': [
-            s for s in live_signals 
-            if (s['timestamp'], s['symbol'], s['direction']) in only_live
-        ][:10],
+        'signals': backtest_signals,
+        'model_info': {
+            'trained_down': trained_down,
+            'trained_up': trained_up,
+            'train_klines': len(train_df),
+            'test_klines': len(test_df),
+        }
     }
 
 
-def _load_all_data(data_path: Path, symbol: str) -> pd.DataFrame:
-    """加载所有数据（2024-2025 + 2026日度文件）"""
-    dfs = []
+@router.get("/backtest/today")
+async def backtest_today(
+    date: Optional[str] = Query(None, description="日期 YYYY-MM-DD，默认今天(UTC)")
+):
+    """
+    独立回测：从头预训练新模型，预测指定日期信号，与实盘对比
     
-    # 加载2024-2025年数据
-    for year in [2024, 2025]:
-        for month in range(1, 13):
-            fp = data_path / f'{symbol}-1m-{year}-{month:02d}.csv'
-            if fp.exists():
-                df = pd.read_csv(fp, header=None,
-                               names=['timestamp', 'open', 'high', 'low', 'close', 'volume',
-                                      'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-                                      'taker_buy_quote', 'ignore'])
-                if df['timestamp'].iloc[0] > 1e15:
-                    df['timestamp'] = df['timestamp'] // 1000
-                dfs.append(df)
+    训练在后台线程池运行，不阻塞主服务的信号生成
+    """
+    import calendar
     
-    # 加载日度文件（2026年）
-    for day in range(1, 32):
-        fp = data_path / f'{symbol}-1m-2026-01-{day:02d}.csv'
-        if fp.exists():
-            df = pd.read_csv(fp, header=None,
-                           names=['timestamp', 'open', 'high', 'low', 'close', 'volume',
-                                  'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-                                  'taker_buy_quote', 'ignore'])
-            if df['timestamp'].iloc[0] > 1e15:
-                df['timestamp'] = df['timestamp'] // 1000
-            dfs.append(df)
-    
-    if not dfs:
-        return pd.DataFrame()
-    
-    return pd.concat(dfs, ignore_index=True).sort_values('timestamp').drop_duplicates('timestamp')
+    try:
+        # 解析日期（作为UTC日期）
+        if date:
+            try:
+                target_date = datetime.strptime(date, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(status_code=400, detail="日期格式错误，应为 YYYY-MM-DD")
+        else:
+            target_date = datetime.utcnow()
+        
+        date_str = target_date.strftime('%Y-%m-%d')
+        target_ts = int(calendar.timegm(target_date.replace(hour=0, minute=0, second=0).timetuple()) * 1000)
+        
+        print(f"[回测] 开始回测 {date_str}, target_ts={target_ts}")
+        
+        # 获取数据目录
+        from ..server import DATA_DIR
+        data_path = Path(DATA_DIR)
+        
+        backtest_signals = []
+        model_info = {}
+        
+        for symbol in ['BTCUSDT', 'ETHUSDT']:
+            print(f"[回测] {symbol}: 开始处理...")
+            
+            # 加载训练数据（本地文件）- 这个很快
+            train_data = _load_all_data(data_path, symbol)
+            if train_data.empty:
+                print(f"[回测] {symbol}: 无本地数据")
+                continue
+            
+            # 训练数据：target_ts 之前的数据
+            train_df = train_data[train_data['timestamp'] < target_ts].copy()
+            print(f"[回测] {symbol}: 训练数据 {len(train_df)} 条")
+            
+            # 测试数据：先从本地找，没有则从 API 获取
+            test_df = train_data[
+                (train_data['timestamp'] >= target_ts) & 
+                (train_data['timestamp'] < target_ts + 24*60*60*1000)
+            ].copy()
+            
+            # 如果本地没有测试日数据，从 API 异步获取
+            if test_df.empty:
+                print(f"[回测] {symbol}: 本地无 {date_str} 数据，从 API 获取...")
+                test_df = await _fetch_klines_from_api_async(
+                    symbol, 
+                    target_ts, 
+                    target_ts + 24*60*60*1000
+                )
+                if not test_df.empty:
+                    print(f"[回测] {symbol}: API 获取 {len(test_df)} 条 K 线")
+                else:
+                    print(f"[回测] {symbol}: API 获取失败")
+            
+            if train_df.empty:
+                continue
+            
+            # 在线程池中运行训练和预测（不阻塞主服务）
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _backtest_executor,
+                _run_backtest_sync,
+                symbol,
+                train_df,
+                test_df
+            )
+            
+            backtest_signals.extend(result['signals'])
+            model_info[symbol] = result['model_info']
+        
+        # 按时间排序
+        backtest_signals.sort(key=lambda x: x['timestamp'])
+        
+        print(f"[回测] 回测完成，{len(backtest_signals)} 个信号")
+        
+        # 从数据库获取实盘信号
+        db = await get_db()
+        live_signals = []
+        async with db.session() as session:
+            repo = SignalRepository(session)
+            all_signals = await repo.get_latest(500)
+            
+            for sig in all_signals:
+                sig_date = sig.created_at.strftime('%Y-%m-%d')
+                if sig_date == date_str:
+                    # 转换为北京时间
+                    beijing_time = sig.created_at + timedelta(hours=8)
+                    live_signals.append({
+                        'id': sig.id,
+                        'timestamp': beijing_time.strftime('%Y-%m-%d %H:%M'),
+                        'symbol': sig.symbol,
+                        'direction': sig.direction,
+                        'level': sig.level,
+                        'confidence': round(sig.confidence, 4),
+                        'entry_price': sig.entry_price,
+                        'settle_price': sig.settle_price,
+                        'is_win': sig.is_win,
+                        'pnl': sig.pnl,
+                        'status': sig.status,
+                    })
+        
+        # 对比分析
+        bt_set = set((s['timestamp'], s['symbol'], s['direction']) for s in backtest_signals)
+        live_set = set((s['timestamp'], s['symbol'], s['direction']) for s in live_signals)
+        
+        common = bt_set & live_set
+        only_backtest = bt_set - live_set
+        only_live = live_set - bt_set
+        
+        # 统计
+        bt_wins = sum(1 for s in backtest_signals if s.get('is_win') is True)
+        bt_total = sum(1 for s in backtest_signals if s.get('is_win') is not None)
+        bt_pnl = sum(s.get('pnl', 0) or 0 for s in backtest_signals)
+        
+        live_wins = sum(1 for s in live_signals if s.get('is_win') is True)
+        live_total = sum(1 for s in live_signals if s.get('is_win') is not None)
+        live_pnl = sum(s.get('pnl', 0) or 0 for s in live_signals)
+        
+        return {
+            'date': date_str,
+            'mode': 'independent_backtest',
+            'model_info': model_info,
+            'backtest': {
+                'signals': backtest_signals,
+                'count': len(backtest_signals),
+                'win_rate': bt_wins / bt_total if bt_total > 0 else None,
+                'pnl': bt_pnl,
+            },
+            'live': {
+                'signals': live_signals,
+                'count': len(live_signals),
+                'win_rate': live_wins / live_total if live_total > 0 else None,
+                'pnl': live_pnl,
+            },
+            'comparison': {
+                'common': len(common),
+                'only_backtest': len(only_backtest),
+                'only_live': len(only_live),
+                'match_rate': len(common) / max(len(bt_set), len(live_set), 1),
+            },
+            'only_backtest_signals': [
+                s for s in backtest_signals 
+                if (s['timestamp'], s['symbol'], s['direction']) in only_backtest
+            ][:10],
+            'only_live_signals': [
+                s for s in live_signals 
+                if (s['timestamp'], s['symbol'], s['direction']) in only_live
+            ][:10],
+        }
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[回测] 错误: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"回测失败: {str(e)}")
 
 
 def _load_all_data(data_path: Path, symbol: str) -> pd.DataFrame:
