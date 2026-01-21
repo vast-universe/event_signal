@@ -87,10 +87,20 @@ class SymbolHandler:
             'total_klines': len(self.features.klines),
         })
 
-        # 在线学习已禁用，不再添加样本到队列
-        # 回测对比显示预训练模型效果更好
-
         signal = self.strategy.check(price, feat, prob_down, prob_up)
+
+        # 延迟学习：添加样本到队列（无论是否产生信号）
+        if feat:
+            rsi6 = feat.get('rsi6', 50)
+            bb_pct = feat.get('bb_pct', 0.5)
+            from ..config import OVERBOUGHT, OVERSOLD
+            
+            if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
+                # 超买做空
+                self.model.add_pending(current_ts, feat, price, "DOWN")
+            elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
+                # 超卖做多
+                self.model.add_pending(current_ts, feat, price, "UP")
 
         if signal:
             settle_ts = current_ts + HORIZON * 60 * 1000
@@ -180,16 +190,15 @@ class SymbolHandler:
 
     def _learn_pending_samples(self, current_price: float, current_ts: int):
         """
-        延迟学习：已禁用
+        延迟学习：已启用
         
-        回测对比显示，在线学习会降低模型质量：
-        - 纯预训练：S级75%，A级65.6%，盈利
-        - 预训练+在线学习：S级50%，A级57.1%，亏损
-        
-        因此关闭在线学习，只使用预训练模型。
+        研究结果显示 RMSProp + 延迟学习效果最好：
+        - RMSProp延迟学习：914信号, 60.3%胜率, +1352U
+        - RMSProp不学习：1753信号, 51.7%胜率, -2714U
         """
-        # 清空队列，不学习
-        self._pending_learn = []
+        # 调用模型的延迟学习
+        results = self.model.update_with_price(current_ts, current_price)
+        return results
 
 
 class SignalService:
@@ -403,7 +412,7 @@ class SignalService:
             
             # 超买 → 做空训练 (predict-then-learn)
             if rsi6 >= OVERBOUGHT["rsi6_min"] and bb_pct >= OVERBOUGHT["bb_pct_min"]:
-                y = 1 if future_price < price else 0
+                y = 1 if future_price <= price else 0  # 结算价 <= 下单价 为赢
                 
                 # warmup 后先预测，统计信号胜率
                 if trained_down >= warmup and vol_spike <= VOL_SPIKE_MAX:
@@ -424,7 +433,7 @@ class SignalService:
             
             # 超卖 → 做多训练 (predict-then-learn)
             elif rsi6 <= OVERSOLD["rsi6_max"] and bb_pct <= OVERSOLD["bb_pct_max"]:
-                y = 1 if future_price > price else 0
+                y = 1 if future_price >= price else 0  # 结算价 >= 下单价 为赢
                 
                 # warmup 后先预测，统计信号胜率
                 if trained_up >= warmup and vol_spike <= VOL_SPIKE_MAX:

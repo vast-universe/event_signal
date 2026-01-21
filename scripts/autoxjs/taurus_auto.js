@@ -5,7 +5,7 @@
 
 // ==================== 配置 ====================
 var CONFIG = {
-    WS_URL: "ws://192.168.31.15:8000/ws",
+    WS_URL: "ws://192.168.31.34:8000/ws",
     ACCEPT_LEVELS: ["S", "A", "B", "C"],
     ACCEPT_SYMBOLS: "ALL",  // "ALL" / "BTCUSDT" / "ETHUSDT"
     AUTO_TRADE: true,

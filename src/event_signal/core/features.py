@@ -126,6 +126,15 @@ class FeatureEngine:
         else:
             feat["vol_spike"] = 1.0
 
+        # 14. RSI和BB交互特征
+        feat["rsi_bb"] = feat["rsi6"] * feat["bb_pct"] / 100
+
+        # 15. ret1 - 1分钟收益率
+        if len(c) >= 2:
+            feat["ret1"] = (c[-1] / c[-2] - 1) * 100
+        else:
+            feat["ret1"] = 0.0
+
         return feat
 
     def _calc_rsi(self, closes: np.ndarray, period: int) -> float:

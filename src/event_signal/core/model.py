@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
-from river import linear_model, preprocessing
+from river import linear_model, optim, preprocessing
 from river.compose import Pipeline
 
 from ..config import MODEL_L2, HORIZON
@@ -31,16 +31,16 @@ class RiverModel:
         self.horizon = horizon_minutes
         self.horizon_ms = horizon_minutes * 60 * 1000
 
-        # 做空模型：预测超买后下跌概率
+        # 做空模型：预测超买后下跌概率 (RMSProp优化器)
         self.model_down = Pipeline(
             preprocessing.StandardScaler(),
-            linear_model.LogisticRegression(l2=MODEL_L2),
+            linear_model.LogisticRegression(optimizer=optim.RMSProp(), l2=MODEL_L2),
         )
 
-        # 做多模型：预测超卖后上涨概率
+        # 做多模型：预测超卖后上涨概率 (RMSProp优化器)
         self.model_up = Pipeline(
             preprocessing.StandardScaler(),
-            linear_model.LogisticRegression(l2=MODEL_L2),
+            linear_model.LogisticRegression(optimizer=optim.RMSProp(), l2=MODEL_L2),
         )
 
         # 待标注样本队列

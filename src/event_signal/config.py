@@ -20,21 +20,24 @@ PAYOUT_RATE = 0.80  # 收益率
 BREAKEVEN_WINRATE = 1 / (1 + PAYOUT_RATE)  # 盈亏平衡胜率 55.56%
 
 # ========== 入场条件 ==========
-# v3.0: 放宽条件，信号更多，日均盈亏+61%
-OVERBOUGHT = {"rsi6_min": 60, "bb_pct_min": 0.7}  # 超买做空
-OVERSOLD = {"rsi6_max": 40, "bb_pct_max": 0.3}  # 超卖做多
+# v4.0: 优化后配置，回测10天+1352U，60.3%胜率
+OVERBOUGHT = {"rsi6_min": 70, "bb_pct_min": 0.8}  # 超买做空
+OVERSOLD = {"rsi6_max": 30, "bb_pct_max": 0.2}  # 超卖做多
 
 # ========== 成交量过滤 ==========
 VOL_SPIKE_MAX = 3.0  # 成交量突变阈值，超过则跳过信号
 
 # ========== 信号阈值 ==========
-SIGNAL_THRESHOLDS = {"S": 0.75, "A": 0.70, "B": 0.65, "C": 0.62}
+SIGNAL_THRESHOLDS = {"S": 0.85, "A": 0.80, "B": 0.75, "C": 0.70}
 
 # ========== 下注金额 ==========
 BET_AMOUNTS = {"S": 30, "A": 20, "B": 10, "C": 5}
 
+# ========== 信号冷却 ==========
+SIGNAL_COOLDOWN = 0  # 不用冷却
+
 # ========== 模型配置 ==========
-MODEL_L2 = 0.5  # L2正则化参数
+MODEL_L2 = 2.0  # L2正则化参数 (优化后)
 MODEL_SAVE_INTERVAL = 10  # 模型保存间隔(分钟)
 
 # ========== 数据库配置 ==========
